@@ -1,0 +1,89 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // --- Helper Functions ---
+    
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isMember(projectId) {
+      return isSignedIn() && exists(/databases/$(database)/documents/memberships/$(request.auth.uid + "_" + projectId));
+    }
+    
+    function getRole(projectId) {
+      return get(/databases/$(database)/documents/memberships/$(request.auth.uid + "_" + projectId)).data.role;
+    }
+
+    function isEditor(projectId) {
+      return isMember(projectId) && (getRole(projectId) == 'Editor' || getRole(projectId) == 'Owner');
+    }
+
+    function isOwner(projectId) {
+      return isMember(projectId) && getRole(projectId) == 'Owner';
+    }
+
+    // --- Collection Rules ---
+
+    // User Profile Rules
+    match /users/{userId} {
+      allow read, create: if isSignedIn() && request.auth.uid == userId;
+      allow update: if isSignedIn() && request.auth.uid == userId 
+        && request.resource.data.role == resource.data.role;
+    }
+
+    // Project Rules
+    match /projects/{projectId} {
+      allow read: if isMember(projectId);
+      allow create: if isSignedIn();
+      allow update, delete: if isOwner(projectId);
+    }
+
+    // Membership Rules
+    match /memberships/{membershipId} {
+      allow read: if isSignedIn() && (membershipId.startsWith(request.auth.uid) || isMember(resource.data.projectId));
+      allow create: if isSignedIn(); // Allow creating for others if inviting
+      allow update, delete: if isOwner(resource.data.projectId || resource.data.projectId);
+    }
+
+    // Artifact Rules
+    match /artifacts/{artifactId} {
+      allow read: if isMember(resource.data.projectId);
+      allow create: if isEditor(request.resource.data.projectId);
+      allow update: if isEditor(request.resource.data.projectId);
+      allow delete: if isOwner(resource.data.projectId) || (isEditor(resource.data.projectId) && resource.data.userId == request.auth.uid);
+    }
+
+    // Report Rules
+    match /reports/{reportId} {
+      allow read: if isMember(resource.data.projectId);
+      allow create: if isEditor(request.resource.data.projectId);
+      allow update: if isEditor(request.resource.data.projectId);
+      allow delete: if isOwner(resource.data.projectId) || (isEditor(resource.data.projectId) && resource.data.userId == request.auth.uid);
+    }
+
+    // Notification Rules
+    match /notifications/{notificationId} {
+      // Users can only read and update their own notifications
+      allow read: if isSignedIn() && (resource.data.userId == request.auth.uid || resource.data.email == request.auth.token.email);
+      allow update: if isSignedIn() && (resource.data.userId == request.auth.uid);
+      allow create: if isSignedIn(); // Allow invites/alerts to be sent
+    }
+
+    // Messages Rules
+    match /messages/{messageId} {
+      allow read: if isMember(resource.data.projectId);
+      allow create: if isMember(request.resource.data.projectId);
+      allow delete: if request.auth.uid == resource.data.userId;
+    }
+
+    // Script Analysis Rules
+    match /scriptAnalyses/{analysisId} {
+      allow read: if isMember(resource.data.projectId);
+      allow create, update: if isEditor(request.resource.data.projectId);
+      allow delete: if isOwner(resource.data.projectId);
+    }
+  }
+}
